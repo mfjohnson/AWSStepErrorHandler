@@ -180,16 +180,16 @@ Resources:
 
             End: true
           # On any error except for timeout, process the record as part of a manual review
-#          PublishUnresolvedError:
-#            Type: "Tasks"
-#            InputPath: "$"
-#            Resource: "arn:aws:states:::sns:publish"
-#            Parameters:
-#              QueueUrl: !GetAtt dlqSQSLambda.Arn
-#              MessageBody:
-#                Input.$: "$"
-#                TaskToken.$: "$$.Task.Token"
-#            End: true
+          PublishUnresolvedError:
+            Type: "Tasks"
+            InputPath: "$"
+            Resource: "arn:aws:states:::sns:publish"
+            Parameters:
+              QueueUrl: !GetAtt dlqSQSLambda.Arn
+              MessageBody:
+                Input.$: "$"
+                TaskToken.$: "$$.Task.Token"
+            End: true
 
 
   StateMachinesLogGroup:
