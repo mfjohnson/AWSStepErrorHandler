@@ -1,0 +1,208 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  LambdaKinesis
+
+  Demonstrate Error handling Integrating Lambda with Kinesis
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 3
+    Tags:
+      Project: KinesisLambdaError
+
+Resources:
+  #-------------------------------------------------
+  # Scenario 1 run the Lambda functions at the Region level to talk to a Kinesis stream in the same region
+  S3EventData:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: "kds-eventdata"
+
+  s1eventdata:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: LambdaKinesisTest2
+      ShardCount: 1
+
+  s1producerErr:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: s1_producer_errs/
+      Handler: producer.lambda_handler
+      Runtime: python3.9
+      Timeout: 30
+      FunctionName: KdsErrProducer
+      Environment:
+        Variables:
+          STREAM_NAME: !Ref s1eventdata
+          ROW_COUNT: 10
+      Policies:
+        - AWSLambdaKinesisExecutionRole
+        - AmazonKinesisFullAccess
+
+#  sqsSuccessConsumer:
+#    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+#    Properties:
+#      CodeUri: sqsSuccessConsumer/
+#      Handler: readSQSSuccessQueue.lambda_handler
+#      Runtime: python3.9
+#      FunctionName: SuccessReader
+#      Timeout: 10
+#      Tracing: Active
+#      Policies:
+#        - AmazonSQSFullAccess
+#        - AmazonDynamoDBFullAccess
+#      Environment:
+#        Variables:
+#          TABLE_NAME: !Ref SuccessTable
+#          SQS_Queue_URL: !Ref SuccessQueue
+#      Events:
+#        SQSSuccessEvent:
+#          Type: SQS
+#          Properties:
+#            Queue: !GetAtt SuccessQueue.Arn
+#            BatchSize: 10
+
+
+  processEachRecord:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: ProcessRecords/
+      Handler: processEachRecord.lambda_handler
+      Runtime: python3.9
+      FunctionName: processEachRecord
+      Timeout: 10
+      Tracing: Active
+      Policies:
+        - AWSStepFunctionsFullAccess
+        - AWSLambdaRole
+
+# Reads the full list of records from the Kinesis Event Source and passes it on to The Step function for processing.
+# It is assumed that there are no errors and by passing the full Kinesis Record list, the Kinesis Shard is freed up for
+# the next batch.
+  gatherRecordListKinesis:
+      Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+      Properties:
+        CodeUri: ProcessRecords/
+        Handler: gatherRecordListKinesis.lambda_handler
+        Runtime: python3.9
+        FunctionName: gatherRecordListKinesis
+        Timeout: 10
+        Tracing: Active
+        Environment:
+          Variables:
+            STREAM_NAME: !Ref s1eventdata
+            STATE_MACHINE_ARN: !GetAtt KinesisProcessStateMachine.Arn
+        Policies:
+          - AWSStepFunctionsFullAccess
+          - AWSLambdaKinesisExecutionRole
+          - AmazonKinesisFullAccess
+          - AmazonSQSFullAccess
+        Events:
+          Stream:
+            Type: Kinesis
+            Properties:
+              Stream: !GetAtt s1eventdata.Arn
+              BatchSize: 10
+              MaximumBatchingWindowInSeconds: 20
+              MaximumRecordAgeInSeconds: 120
+              StartingPosition: LATEST
+              MaximumRetryAttempts: 1
+              BisectBatchOnFunctionError: true
+              DestinationConfig:
+                OnFailure:
+                  Destination: !GetAtt dlqSQSLambda.Arn
+
+
+
+
+  processEachRecordLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${processEachRecord}
+      RetentionInDays: 1
+
+  gatherRecordListKinesisLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${gatherRecordListKinesis}
+      RetentionInDays: 1
+
+
+  dlqSQSLambda:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: dlqlambda
+
+  SuccessQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: SuccessQueue1
+
+
+  KinesisProcessStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Policies:
+        - AmazonSQSFullAccess
+        - AWSLambdaKinesisExecutionRole
+        - AWSLambdaRole
+
+      Definition:
+        StartAt: MapRecords
+        States:
+          MapRecords:
+            Type: "Map"
+            InputPath: "$"
+            ItemsPath: "$.Data"
+            ResultPath: "$.processedRecords"
+            MaxConcurrency: 0
+            Iterator:
+              StartAt: ProcessEachRecord
+              States:
+                ProcessEachRecord:
+                  Type: Task
+                  Resource: "arn:aws:states:::lambda:invoke"
+                  End: true
+                  Parameters:
+                    FunctionName: !Ref processEachRecord
+#                    Retry:
+#                      ErrorEquals:
+#                        - States.Timeout
+#                      IntervalSeconds: 5
+#                      MaxAttempts: 3
+#                      BackoffRate: 10
+#            Catch:
+#              - ErrorEquals: States.TaskFailed
+#                Next: PublishUnresolvedError
+
+            End: true
+          # On any error except for timeout, process the record as part of a manual review
+#          PublishUnresolvedError:
+#            Type: "Tasks"
+#            InputPath: "$"
+#            Resource: "arn:aws:states:::sns:publish"
+#            Parameters:
+#              QueueUrl: !GetAtt dlqSQSLambda.Arn
+#              MessageBody:
+#                Input.$: "$"
+#                TaskToken.$: "$$.Task.Token"
+#            End: true
+
+
+  StateMachinesLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 3
+      LogGroupName: llt-statemachine-logs
+
+
+
+
+
+
+
+
+

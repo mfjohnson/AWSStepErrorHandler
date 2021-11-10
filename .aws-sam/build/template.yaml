@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'LambdaKinesis
+
+  Demonstrate Error handling Integrating Lambda with Kinesis
+
+  '
+Globals:
+  Function:
+    Timeout: 3
+    Tags:
+      Project: KinesisLambdaError
+Resources:
+  S3EventData:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: kds-eventdata
+  s1eventdata:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: LambdaKinesisTest2
+      ShardCount: 1
+  s1producerErr:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: s1producerErr
+      Handler: producer.lambda_handler
+      Runtime: python3.9
+      Timeout: 30
+      FunctionName: KdsErrProducer
+      Environment:
+        Variables:
+          STREAM_NAME:
+            Ref: s1eventdata
+          ROW_COUNT: 10
+      Policies:
+      - AWSLambdaKinesisExecutionRole
+      - AmazonKinesisFullAccess
+  processEachRecord:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: processEachRecord
+      Handler: processEachRecord.lambda_handler
+      Runtime: python3.9
+      FunctionName: processEachRecord
+      Timeout: 10
+      Tracing: Active
+      Policies:
+      - AWSStepFunctionsFullAccess
+      - AWSLambdaRole
+  gatherRecordListKinesis:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: gatherRecordListKinesis
+      Handler: gatherRecordListKinesis.lambda_handler
+      Runtime: python3.9
+      FunctionName: gatherRecordListKinesis
+      Timeout: 10
+      Tracing: Active
+      Environment:
+        Variables:
+          STREAM_NAME:
+            Ref: s1eventdata
+          STATE_MACHINE_ARN:
+            Fn::GetAtt:
+            - KinesisProcessStateMachine
+            - Arn
+      Policies:
+      - AWSStepFunctionsFullAccess
+      - AWSLambdaKinesisExecutionRole
+      - AmazonKinesisFullAccess
+      - AmazonSQSFullAccess
+      Events:
+        Stream:
+          Type: Kinesis
+          Properties:
+            Stream:
+              Fn::GetAtt:
+              - s1eventdata
+              - Arn
+            BatchSize: 10
+            MaximumBatchingWindowInSeconds: 20
+            MaximumRecordAgeInSeconds: 120
+            StartingPosition: LATEST
+            MaximumRetryAttempts: 1
+            BisectBatchOnFunctionError: true
+            DestinationConfig:
+              OnFailure:
+                Destination:
+                  Fn::GetAtt:
+                  - dlqSQSLambda
+                  - Arn
+  processEachRecordLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/lambda/${processEachRecord}
+      RetentionInDays: 1
+  gatherRecordListKinesisLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/lambda/${gatherRecordListKinesis}
+      RetentionInDays: 1
+  dlqSQSLambda:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: dlqlambda
+  SuccessQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: SuccessQueue1
+  KinesisProcessStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Policies:
+      - AmazonSQSFullAccess
+      - AWSLambdaKinesisExecutionRole
+      - AWSLambdaRole
+      Definition:
+        StartAt: MapRecords
+        States:
+          MapRecords:
+            Type: Map
+            InputPath: $
+            ItemsPath: $.Data
+            ResultPath: $.processedRecords
+            MaxConcurrency: 0
+            Iterator:
+              StartAt: ProcessEachRecord
+              States:
+                ProcessEachRecord:
+                  Type: Task
+                  Resource: arn:aws:states:::lambda:invoke
+                  End: true
+                  Parameters:
+                    FunctionName:
+                      Ref: processEachRecord
+            End: true
+  StateMachinesLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 3
+      LogGroupName: llt-statemachine-logs
