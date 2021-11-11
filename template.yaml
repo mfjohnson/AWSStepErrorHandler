@@ -149,47 +149,8 @@ Resources:
         - AmazonSQSFullAccess
         - AWSLambdaKinesisExecutionRole
         - AWSLambdaRole
+      DefinitionUri: retry-statemachine.json
 
-      Definition:
-        StartAt: MapRecords
-        States:
-          MapRecords:
-            Type: "Map"
-            InputPath: "$"
-            ItemsPath: "$.Data"
-            ResultPath: "$.processedRecords"
-            MaxConcurrency: 0
-            Iterator:
-              StartAt: ProcessEachRecord
-              States:
-                ProcessEachRecord:
-                  Type: Task
-                  Resource: "arn:aws:states:::lambda:invoke"
-                  End: true
-                  Parameters:
-                    FunctionName: !Ref processEachRecord
-#                    Retry:
-#                      ErrorEquals:
-#                        - States.Timeout
-#                      IntervalSeconds: 5
-#                      MaxAttempts: 3
-#                      BackoffRate: 10
-#            Catch:
-#              - ErrorEquals: States.TaskFailed
-#                Next: PublishUnresolvedError
-
-            End: true
-          # On any error except for timeout, process the record as part of a manual review
-          PublishUnresolvedError:
-            Type: "Tasks"
-            InputPath: "$"
-            Resource: "arn:aws:states:::sns:publish"
-            Parameters:
-              QueueUrl: !GetAtt dlqSQSLambda.Arn
-              MessageBody:
-                Input.$: "$"
-                TaskToken.$: "$$.Task.Token"
-            End: true
 
 
   StateMachinesLogGroup:

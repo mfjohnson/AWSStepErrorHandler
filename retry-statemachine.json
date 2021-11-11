@@ -1,0 +1,68 @@
+{
+  "StartAt": "MapRecords",
+  "States": {
+    "MapRecords": {
+      "End": true,
+      "InputPath": "$",
+      "ItemsPath": "$.Data",
+      "ResultPath": "$",
+      "Iterator": {
+        "StartAt": "ProcessEachRecord",
+        "States": {
+          "ProcessEachRecord": {
+            "End": true,
+            "InputPath": "$",
+            "ResultPath": "$",
+            "Parameters": {
+              "Payload.$": "$",
+              "FunctionName": "processEachRecord"
+            },
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Type": "Task"
+          }
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "BackoffRate": 5,
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Runtime",
+            "States.Permissions",
+            "States.TaskFailed"
+          ],
+          "Next": "ManualReviewError"
+        }
+      ],
+      "MaxConcurrency": 0,
+      "Type": "Map"
+    },
+    "ManualReviewError": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sqs:sendMessage",
+      "Parameters": {
+        "QueueUrl": "https://sqs.us-east-1.amazonaws.com/729451883946/dlqlambda",
+        "MessageBody.$": "$.input.message",
+        "MessageAttributes": {
+          "my attribute no 1": {
+            "DataType": "String",
+            "StringValue": "attribute1"
+          },
+          "my attribute no 2": {
+            "DataType": "String",
+            "StringValue": "attribute2"
+          }
+        }
+      },
+      "End": true
+    }
+  }
+}
